@@ -1,0 +1,5 @@
+pybullet>=3.2.7   # Python 3.11 권장 (3.13은 휠 없음)
+numpy
+pillow
+imageio
+imageio-ffmpeg
