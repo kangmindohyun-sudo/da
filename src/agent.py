@@ -50,12 +50,15 @@ class LearnedReacher:
                 pos = r.tool()[0]
                 e = np.asarray(goals[a], float) - pos
                 worst = max(worst, float(np.linalg.norm(e)))
+                en = float(np.linalg.norm(e))
+                if en > 0.01:   # 스텝당 최대 1cm: 특이점 근처 폭주 방지
+                    e = e * (0.01 / en)
                 q_all = [p.getJointState(r.id, j, physicsClientId=r.cid)[0] for j in (0, 1, 2, 3, 4, 6)]
                 Jl, _ = p.calculateJacobian(r.id, TOOL_LINK, [0, 0, 0], q_all, [0.0] * 6, [0.0] * 6, physicsClientId=r.cid)
                 Rb = np.array(p.getMatrixFromQuaternion(r.base_orn)).reshape(3, 3)   # 자코비안은 베이스 프레임 기준 -> 월드로 변환
                 J = (Rb @ np.array(Jl))[:, :5]
                 dq = J.T @ np.linalg.solve(J @ J.T + 1e-4 * np.eye(3), gain * e)
-                dq = np.clip(dq, -0.03, 0.03)
+                dq = np.clip(dq, -0.02, 0.02)
                 dh = (hd[a] - r.heading() + np.pi) % (2 * np.pi) - np.pi
                 dq[4] = float(np.clip(0.9 * dh, -0.03, 0.03))
                 qa = r.q()

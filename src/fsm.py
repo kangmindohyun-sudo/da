@@ -314,6 +314,15 @@ class SortingFSM:
             self.reach({a: self._tool_goal(a, plan[a], plan[a]["z"]) for a in arms}, tol=0.001, max_steps=30)
             self._tick(24)
 
+    def servo_move(self, goals, step=0.004):
+        """현재 툴 위치에서 목표까지 직선(step 간격)으로 자코비안 서보 이동 - 접촉 직후 안전한 후퇴/상승용."""
+        goals = {a: np.asarray(g, float) for a, g in goals.items()}
+        cur = {a: self.env.tool_pos(a) for a in goals}
+        n = max(1, int(np.ceil(max(np.linalg.norm(goals[a] - cur[a]) for a in goals) / step)))
+        for i in range(1, n + 1):
+            self._hold()
+            self.rc.resolved_rate({a: cur[a] + (goals[a] - cur[a]) * i / n for a in goals}, tol=0.002, max_steps=8, hold=self._hold)
+
     def coop_move(self, ctx, target, step=0.003, tol=0.004):
         """양팔 동기 이송: 물체 중심을 기준 좌표계로 두고 목표까지 step씩 전진, 각 팔 목표 = 물체 경로점 + 파지 오프셋."""
         arms, iid = ctx["arms"], ctx["id"]
@@ -417,10 +426,11 @@ class SortingFSM:
                 self.magnet.off(a)
             plan = ctx["plan"]
             out = {a: self.env.tool_pos(a) + np.array([-plan[a].get("inward", 0.0) * 0.035, 0.0, 0.0]) for a in arms}
-            self.reach(out, tol=0.01, max_steps=50)      # 압착 해제(바깥으로 이동)
-            self._tick(60)
-            up = {a: np.array([out[a][0], out[a][1], ctx["z_h"]]) for a in arms}
-            self.move(up, tol=0.02, max_steps=80)
+            for r in self.env.robots.values():
+                r.max_force = 8.0
+            self.servo_move(out)                         # 압착 해제: 바깥으로 천천히
+            self._tick(40)
+            self.servo_move({a: out[a] + np.array([0.0, 0.0, 0.07]) for a in arms}, step=0.005)   # 수직 상승
         else:
             drop = {a: np.array([h[0], h[1], z_drop]) for a, h in ctx["hover"].items()}
             self.move(drop, tol=0.010, max_steps=120)
