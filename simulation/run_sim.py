@@ -73,7 +73,8 @@ def main():
                                    contacts=[(c[2], c[4], round(c[9], 1)) for c in cps][:5],
                                    tools={a: [round(float(x), 3) for x in env.tool_pos(a)] for a in 'AB'}))
     seen = set()
-    env.hooks.append(watch)
+    if not os.environ.get("NOWATCH"):
+        env.hooks.append(watch)
     t0 = time.time()
     for jev, _ in sc:
         r = fsm.process(jev)

@@ -8,6 +8,8 @@ import pybullet as p
 from .rl_env import DQ_SCALE, TOOL_DOWN
 from .robot import SUBSTEPS
 
+WINDUP = 0.10   # 관절 목표-실제각 허용 편차 [rad]
+
 
 class LearnedReacher:
     def __init__(self, env, model_path="models/reach_ppo", vecnorm_path="models/reach_vecnorm.pkl"):
@@ -74,7 +76,9 @@ class LearnedReacher:
                 elif self.use_head:
                     dh = (headings[a] - r.yaw - r.heading() + np.pi) % (2 * np.pi) - np.pi
                     act[4] = float(np.clip(0.9 * dh / DQ_SCALE, -1, 1))   # 롤: 헤딩 비례 서보
-                r.command(r.q_target + act * DQ_SCALE)
+                qt = r.q_target + act * DQ_SCALE
+                qa = r.q()
+                r.command(np.clip(qt, qa - WINDUP, qa + WINDUP))   # 안티와인드업: 목표가 실제 관절각에서 멀어지지 않게
             if hold:
                 hold()
             env.tick(SUBSTEPS)

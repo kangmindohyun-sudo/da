@@ -21,6 +21,7 @@ LARGE_SPAN = 0.05          # 이 이상이면 양팔 협동 파지
 MIN_FORCE = 1.0            # 파지 판정: 패드(고정/이동) 각각 법선 접촉력 [N]
 PINCH_HEADING = np.pi / 2  # 핀치축(툴 x)을 월드 y축 방향으로
 PULSE_S = 0.1
+SQUEEZE_TORQUE = 3.0   # 압착 중 관절 토크 한계 [N·m]
 SQ_GAP = 0.016   # 압착 접근 시작 간격(측면에서 떨어진 거리)
 SQUEEZE_TARGET, SQUEEZE_MAX, SQUEEZE_MIN = 4.0, 25.0, 2.0   # 협동 압착 접촉력 목표/상한/합격 [N]
 PRESTOW = {"A": (-0.12, 0.08, 0.22), "B": (0.12, -0.08, 0.22)}   # 보관 전 자기 쪽 높은 경유점(상대 팔 보관 영역을 쓸지 않도록)
@@ -249,7 +250,7 @@ class SortingFSM:
                 if all(np.linalg.norm(e[0]) < 0.003 and abs(e[2][2]) < 0.004 and e[1] < 0.08 for e in errs.values()):
                     break
                 for a in arms:
-                    corr[a] -= 0.8 * errs[a][2]
+                    corr[a] = np.clip(corr[a] - 0.8 * errs[a][2], -0.012, 0.012)   # 발산 방지: 보정량 상한
         err = {a: float(np.linalg.norm(errs[a][2])) for a in arms}
         ctx["reach_err_mm"] = {a: round(v * 1000, 1) for a, v in err.items()}
         ctx["tool_xy_off"] = {a: self.env.tool_pos(a)[:2] - self.env.item_pos(ctx["id"])[:2] for a in arms}
@@ -271,6 +272,8 @@ class SortingFSM:
         self._tick(40)
         forces = {}
         if any(plan[a]["kind"] == "squeeze" for a in arms):
+            for a in arms:
+                self.env.robots[a].max_force = SQUEEZE_TORQUE
             self._squeeze(ctx, plan, arms)
         for a in arms:
             if plan[a]["kind"] in ("pinch", "squeeze"):
@@ -294,18 +297,21 @@ class SortingFSM:
         return State.LIFT_TRANSPORT
 
     def _squeeze(self, ctx, plan, arms):
-        """두 팔을 안쪽으로 조금씩 밀며 양쪽 패드 접촉력이 목표(SQUEEZE_TARGET N)가 될 때까지 압착 (힘 피드백)."""
-        for _ in range(24):
+        """두 팔을 안쪽으로 밀며 양쪽 패드 접촉력을 목표(SQUEEZE_TARGET N)로 맞춤. 접촉 전에는 큰 걸음, 접촉 후에는 0.4mm 미세 조절."""
+        for a in arms:
+            plan[a]["push"] = max(plan[a]["push"], SQ_GAP - 0.004)   # 접촉 직전까지 빠르게 접근
+        self.reach({a: self._tool_goal(a, plan[a], plan[a]["z"]) for a in arms}, tol=0.0015, max_steps=40)
+        for _ in range(60):
             fs = {a: contact_forces(self.env, a, ctx["id"])[plan[a]["pad"]] for a in arms}
             if all(SQUEEZE_TARGET <= v <= SQUEEZE_MAX for v in fs.values()):
                 break
             for a in arms:
                 if fs[a] < SQUEEZE_TARGET:
-                    plan[a]["push"] = min(plan[a]["push"] + 0.002, 0.034)
+                    plan[a]["push"] = min(plan[a]["push"] + (0.0004 if fs[a] > 0 else 0.001), 0.034)
                 elif fs[a] > SQUEEZE_MAX:
-                    plan[a]["push"] = max(plan[a]["push"] - 0.001, 0.0)
-            self.reach({a: self._tool_goal(a, plan[a], plan[a]["z"]) for a in arms}, tol=0.0015, max_steps=40)
-            self._tick(30)
+                    plan[a]["push"] = max(plan[a]["push"] - 0.0006, 0.0)
+            self.reach({a: self._tool_goal(a, plan[a], plan[a]["z"]) for a in arms}, tol=0.001, max_steps=30)
+            self._tick(24)
 
     def coop_move(self, ctx, target, step=0.004, tol=0.004):
         """양팔 동기 이송: 물체 중심을 기준 좌표계로 두고 목표까지 step씩 전진, 각 팔 목표 = 물체 경로점 + 파지 오프셋."""
@@ -428,6 +434,8 @@ class SortingFSM:
         return State.RETURN_HOME
 
     def _go_stow(self, arms):
+        for r in self.env.robots.values():
+            r.max_force = 8.0
         for a in arms:
             self.jaw_q[a] = JAW_CLOSE_Q
         self.move({a: PRESTOW[a] for a in arms}, tol=0.03, max_steps=80)

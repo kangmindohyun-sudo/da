@@ -111,6 +111,9 @@ class Environment:
             self.tick_count += 1
             if self.frame_every and self.tick_count % self.frame_every == 0:
                 self.frames.append(self.render())
+                if len(self.frames) > 2400:   # 메모리 보호: 프레임을 절반으로 솎고 간격을 2배로
+                    self.frames = self.frames[::2]
+                    self.frame_every *= 2
 
     def arm_clearance(self):
         pts = p.getClosestPoints(self.robots["A"].id, self.robots["B"].id, 0.12, physicsClientId=self.cid)

@@ -29,6 +29,7 @@ class SO101:
         for j in ARM_JOINTS + [JAW_JOINT]:
             p.changeDynamics(self.id, j, jointDamping=0.05, physicsClientId=client)
         self.q_target = self.home_q.copy()
+        self.max_force = 8.0   # 관절 토크 한계 [N·m]: 협동 압착 중에는 낮춰 접촉력을 물리적으로 제한(컴플라이언스)
 
     # ---- 상태 ----
     def q(self):
@@ -62,7 +63,7 @@ class SO101:
     def command(self, q_target, jaw=None):
         self.q_target = np.clip(q_target, self.lo + 0.10, self.hi - 0.10)   # 관절 한계 충격 방지 여유
         p.setJointMotorControlArray(self.id, ARM_JOINTS, p.POSITION_CONTROL, targetPositions=self.q_target.tolist(),
-                                    forces=[8.0] * 5, positionGains=[0.35] * 5, velocityGains=[1.0] * 5,
+                                    forces=[self.max_force] * 5, positionGains=[0.35] * 5, velocityGains=[1.0] * 5,
                                     physicsClientId=self.cid)
         if jaw is not None:
             p.setJointMotorControl2(self.id, JAW_JOINT, p.POSITION_CONTROL, targetPosition=float(jaw), force=3.0,
