@@ -157,14 +157,15 @@ class SortingFSM:
         c = self.env.item_pos(ctx["id"])
         hx, hy, hz = item["half"]
         full_h = 2 * hz
+        zs = float(c[2] - hz)   # 물체가 놓인 면의 높이(플랫폼)
         plan = {}
         for a in ctx["arms"]:
             if ctx["mode"] == "magnet":
-                plan[a] = dict(kind="magnet", xy=c[:2].copy(), z=2 * hz + 0.008 + MAGNET_OFFSET[1], heading=self._pick_heading(a, PINCH_HEADING, (0.0, np.pi)))
+                plan[a] = dict(kind="magnet", xy=c[:2].copy(), z=zs + 2 * hz + 0.008 + MAGNET_OFFSET[1], heading=self._pick_heading(a, PINCH_HEADING, (0.0, np.pi)))
             elif ctx["mode"] == "coop":
                 # 두 팔이 닫힌 패드로 양쪽에서 압착(헤딩 0: 툴 +x = 월드 +x).
                 # A: 고정 패드 바깥면(+0.017)이 물체 -x 측면에, B: 이동 조 패드 바깥면(-0.0225)이 +x 측면에 닿음
-                zt = min(max(0.5 * full_h, 0.012), 0.07) + 0.006
+                zt = zs + min(max(0.5 * full_h, 0.012), 0.07) + 0.006
                 h = self._pick_heading(a, 0.0)                     # 롤 한계 여유 기준으로 헤딩 0 또는 π 선택
                 s = np.cos(h)
                 if a == "A":   # 월드 +x 방향으로 미는 면
@@ -177,7 +178,7 @@ class SortingFSM:
                 chord = 2 * hy if ctx["jev"].item_type not in (ItemType.CAN_ALUMINUM, ItemType.CAN_FERROUS) else 2 * hx
                 O = float(np.clip(chord + 0.050, 0.012, 0.079))
                 zb = 0.004 if full_h < 0.03 else 0.010
-                plan[a] = dict(kind="pinch", xy=c[:2].copy(), O=O, qo=jaw_q_for_opening(O), z=zb + 0.006, heading=self._pick_heading(a, PINCH_HEADING, (0.0, np.pi)), period=2 * np.pi)
+                plan[a] = dict(kind="pinch", xy=c[:2].copy(), O=O, qo=jaw_q_for_opening(O), z=zs + zb + 0.006, heading=self._pick_heading(a, PINCH_HEADING, (0.0, np.pi)), period=2 * np.pi)
         return plan
 
     def _pick_heading(self, a, base, offsets=(0.0, np.pi)):
@@ -313,7 +314,7 @@ class SortingFSM:
             self.reach({a: self._tool_goal(a, plan[a], plan[a]["z"]) for a in arms}, tol=0.001, max_steps=30)
             self._tick(24)
 
-    def coop_move(self, ctx, target, step=0.004, tol=0.004):
+    def coop_move(self, ctx, target, step=0.003, tol=0.004):
         """양팔 동기 이송: 물체 중심을 기준 좌표계로 두고 목표까지 step씩 전진, 각 팔 목표 = 물체 경로점 + 파지 오프셋."""
         arms, iid = ctx["arms"], ctx["id"]
         item0 = self.env.item_pos(iid)
@@ -324,7 +325,8 @@ class SortingFSM:
         for i in range(1, n + 1):
             wp = item0 + (target - item0) * i / n
             goals = {a: wp + offs[a] + corr[a] for a in arms}
-            self.reach(goals, tol=tol, max_steps=25)
+            self._hold()
+            self.rc.resolved_rate(goals, tol=0.0015, max_steps=10, hold=self._hold)   # 접촉 중 두 팔 정밀 동기(자코비안 서보)
             for a in arms:
                 e = self.env.tool_pos(a) - (wp + offs[a])
                 corr[a] = np.clip(corr[a] - 0.5 * e, -0.008, 0.008)

@@ -10,6 +10,7 @@ from .jev_mock import ItemType
 from .robot import CEILING_Z, SO101, SUBSTEPS, TOOL_LINK
 
 SPAWN_XY = (0.0, 0.0)
+PLATE_H = 0.0   # 진단 플랫폼 높이(투입 위치): 납작한 물체의 파지 높이를 팔 도달 한계 위로 올림
 ARM_BASES = {"A": ((-0.22, 0.0), 0.0), "B": ((0.22, 0.0), math.pi)}  # A는 +x, B는 -x를 향함
 
 # (형상, 치수[반지름,높이]|[반치수], 색, 질량)  코인은 시각화를 위해 실물 대비 1.5배
@@ -42,7 +43,7 @@ class Environment:
         self.cid = p.connect(p.GUI if gui else p.DIRECT)
         p.setGravity(0, 0, -9.81, physicsClientId=self.cid)
         p.setTimeStep(1 / 240, physicsClientId=self.cid)
-        p.setPhysicsEngineParameter(numSolverIterations=150, enableConeFriction=1, contactBreakingThreshold=0.001,
+        p.setPhysicsEngineParameter(numSolverIterations=150, numSubSteps=2, enableConeFriction=1, contactBreakingThreshold=0.001,
                                     physicsClientId=self.cid)
         self.width, self.height, self.frame_every = width, height, frame_every
         self.frames, self.tick_count = [], 0
@@ -58,8 +59,14 @@ class Environment:
         vs = p.createVisualShape(p.GEOM_BOX, halfExtents=he, rgbaColor=[0.86, 0.86, 0.84, 1])
         p.createMultiBody(0, cs, vs, [0, 0, -0.10])
         p.createMultiBody(0, -1, vs, [0, 0, -0.01])
-        pv = p.createVisualShape(p.GEOM_CYLINDER, radius=0.05, length=0.002, rgbaColor=[0.25, 0.25, 0.28, 1])
-        p.createMultiBody(0, -1, pv, [*SPAWN_XY, 0.001])  # 진단 플레이트(투입 위치)
+        if PLATE_H > 0:
+            pcs = p.createCollisionShape(p.GEOM_CYLINDER, radius=0.075, height=PLATE_H)
+            pv = p.createVisualShape(p.GEOM_CYLINDER, radius=0.075, length=PLATE_H, rgbaColor=[0.25, 0.25, 0.28, 1])
+            p.createMultiBody(0, pcs, pv, [*SPAWN_XY, PLATE_H / 2])  # 진단 플랫폼(투입 위치)
+            p.changeDynamics(self._last_body(), -1, lateralFriction=0.5)
+        else:
+            pv = p.createVisualShape(p.GEOM_CYLINDER, radius=0.05, length=0.002, rgbaColor=[0.25, 0.25, 0.28, 1])
+            p.createMultiBody(0, -1, pv, [*SPAWN_XY, 0.001])  # 진단 플레이트(표시용)
         fv = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.40, 0.07, 0.008], rgbaColor=[0.35, 0.35, 0.4, 1])
         p.createMultiBody(0, -1, fv, [0, 0, CEILING_Z + 0.010])  # 천장 프레임
         for n, (xy, yaw) in ARM_BASES.items():
@@ -68,6 +75,9 @@ class Environment:
             self._make_bin(b["center"], b["half"], b["color"])
         from .grasp import setup_friction
         setup_friction(self)
+
+    def _last_body(self):
+        return p.getNumBodies(physicsClientId=self.cid) - 1
 
     def _make_bin(self, center, half, color):
         t = 0.004
@@ -90,8 +100,8 @@ class Environment:
             cs = p.createCollisionShape(p.GEOM_BOX, halfExtents=dims)
             vs = p.createVisualShape(p.GEOM_BOX, halfExtents=dims, rgbaColor=color)
             half = dims
-        uid = p.createMultiBody(mass, cs, vs, [xy[0], xy[1], half[2] + 0.001], p.getQuaternionFromEuler([0, 0, yaw]))
-        p.changeDynamics(uid, -1, lateralFriction=3.0, linearDamping=0.05, angularDamping=0.1, restitution=0.0,
+        uid = p.createMultiBody(mass, cs, vs, [xy[0], xy[1], PLATE_H + half[2] + 0.001], p.getQuaternionFromEuler([0, 0, yaw]))
+        p.changeDynamics(uid, -1, lateralFriction=(10.0 if max(half[0], half[1]) * 2 >= 0.05 else 3.0), linearDamping=0.05, angularDamping=0.1, restitution=0.0,
                          ccdSweptSphereRadius=min(half) * 0.8, contactProcessingThreshold=0.0)
         self.items[item_id] = dict(uid=uid, half=half, type=item_type)
         self.tick(30)

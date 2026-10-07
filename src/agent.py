@@ -5,8 +5,9 @@ import os
 import numpy as np
 import pybullet as p
 
+import pybullet as p
 from .rl_env import DQ_SCALE, TOOL_DOWN
-from .robot import SUBSTEPS
+from .robot import SUBSTEPS, TOOL_LINK
 
 WINDUP = 0.10   # 관절 목표-실제각 허용 편차 [rad]
 
@@ -36,6 +37,35 @@ class LearnedReacher:
             parts.append([np.cos(dh), np.sin(dh)])
         o = np.concatenate(parts).astype(np.float32)
         return np.clip((o - self.mean) / np.sqrt(self.var + self.eps), -self.clip, self.clip)
+
+    def resolved_rate(self, goals, tol=0.0015, max_steps=10, hold=None, gain=0.8):
+        """접촉 중 정밀 동기 이송용: 툴 위치 오차를 감쇠 최소제곱 자코비안으로 관절 증분으로 변환(롤은 헤딩 유지)."""
+        env = self.env
+        arms = list(goals)
+        hd = {a: env.robots[a].heading() for a in arms}
+        for _ in range(max_steps):
+            worst = 0.0
+            for a in arms:
+                r = env.robots[a]
+                pos = r.tool()[0]
+                e = np.asarray(goals[a], float) - pos
+                worst = max(worst, float(np.linalg.norm(e)))
+                q_all = [p.getJointState(r.id, j, physicsClientId=r.cid)[0] for j in (0, 1, 2, 3, 4, 6)]
+                Jl, _ = p.calculateJacobian(r.id, TOOL_LINK, [0, 0, 0], q_all, [0.0] * 6, [0.0] * 6, physicsClientId=r.cid)
+                Rb = np.array(p.getMatrixFromQuaternion(r.base_orn)).reshape(3, 3)   # 자코비안은 베이스 프레임 기준 -> 월드로 변환
+                J = (Rb @ np.array(Jl))[:, :5]
+                dq = J.T @ np.linalg.solve(J @ J.T + 1e-4 * np.eye(3), gain * e)
+                dq = np.clip(dq, -0.03, 0.03)
+                dh = (hd[a] - r.heading() + np.pi) % (2 * np.pi) - np.pi
+                dq[4] = float(np.clip(0.9 * dh, -0.03, 0.03))
+                qa = r.q()
+                r.command(np.clip(r.q_target + dq, qa - WINDUP, qa + WINDUP))
+            if hold:
+                hold()
+            env.tick(SUBSTEPS)
+            self.steps_used += 1
+            if worst < tol:
+                break
 
     def stow(self, arms, max_steps=80, hold=None):
         """보관(홈) 자세로 관절공간 복귀 (속도 제한). 작업 간 두 팔 간섭을 피하기 위한 파킹 동작."""
