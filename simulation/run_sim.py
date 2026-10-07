@@ -44,7 +44,7 @@ def main():
     a = ap.parse_args()
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
 
-    env = Environment(gui=a.gui, frame_every=0 if (a.gui or a.no_video) else 12)
+    env = Environment(gui=a.gui, width=640, height=428, frame_every=0 if (a.gui or a.no_video) else 16)
     rc = LearnedReacher(env, a.model, a.vecnorm)
     sc = scenario()
     fsm = SortingFSM(env, rc, {j.item_id: r for j, r in sc if r is not None})
@@ -58,13 +58,16 @@ def main():
           f"{rc.min_clearance*100:.1f} cm | policy steps {rc.steps_used} | wall {time.time()-t0:.0f}s")
     json.dump(fsm.log, open(a.out.replace(".mp4", ".json"), "w"), indent=2, ensure_ascii=False)
     if env.frames:
-        env.save_video(a.out)
-        print("video:", a.out, len(env.frames), "frames")
         from PIL import Image
         gif = a.out.replace(".mp4", ".gif")
-        ims = [Image.fromarray(f).resize((640, 427)) for f in env.frames[::2]]
+        ims = [Image.fromarray(f) for f in env.frames[::2]]
         ims[0].save(gif, save_all=True, append_images=ims[1:], duration=100, loop=0, optimize=True)
-        print("gif:", gif, len(ims), "frames")
+        print("gif:", gif, len(ims), "frames", flush=True)
+        try:
+            env.save_video(a.out)
+            print("video:", a.out, len(env.frames), "frames")
+        except Exception as e:
+            print("mp4 skipped:", e)
 
 
 if __name__ == "__main__":

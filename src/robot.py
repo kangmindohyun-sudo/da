@@ -23,7 +23,7 @@ class SO101:
         self.id = p.loadURDF(URDF, self.base_pos.tolist(), self.base_orn, useFixedBase=True, physicsClientId=client)
         self.lo = np.array([p.getJointInfo(self.id, j, physicsClientId=client)[8] for j in ARM_JOINTS])
         self.hi = np.array([p.getJointInfo(self.id, j, physicsClientId=client)[9] for j in ARM_JOINTS])
-        self.home_q = np.array([0.0, -0.9, 1.2, 0.9, 0.0])
+        self.home_q = np.array([1.6, -0.5, 0.8, 0.9, 0.0])  # 보관 자세: 두 팔 바깥쪽으로 접어 서로 간섭 없음
         self.reset(self.home_q)
         for j in ARM_JOINTS + [JAW_JOINT]:
             p.changeDynamics(self.id, j, jointDamping=0.05, physicsClientId=client)

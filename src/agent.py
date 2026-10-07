@@ -28,6 +28,23 @@ class LearnedReacher:
         o = np.concatenate([robot.q(), robot.dq() * 0.1, pb, gb, gb - pb, [zax[2]]]).astype(np.float32)
         return np.clip((o - self.mean) / np.sqrt(self.var + self.eps), -self.clip, self.clip)
 
+    def stow(self, arms, max_steps=80, hold=None):
+        """보관(홈) 자세로 관절공간 복귀 (속도 제한). 작업 간 두 팔 간섭을 피하기 위한 파킹 동작."""
+        env = self.env
+        for _ in range(max_steps):
+            err = 0.0
+            for a in arms:
+                r = env.robots[a]
+                d = r.home_q - r.q_target
+                err = max(err, float(np.abs(d).max()))
+                r.command(r.q_target + np.clip(d, -DQ_SCALE, DQ_SCALE))
+            if hold:
+                hold()
+            env.tick(SUBSTEPS)
+            self.min_clearance = min(self.min_clearance, env.arm_clearance())
+            if err < 0.02:
+                break
+
     def reach(self, goals, tol=0.012, max_steps=140, settle=True, hold=None):
         """goals: {arm: xyz(world)}. 모든 팔을 동시에 구동. 반환: {arm: 최종 오차[m]}."""
         env = self.env

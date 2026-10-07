@@ -18,7 +18,6 @@ LARGE_SPAN = 0.05          # 이 이상이면 양팔 협동 파지 (SO-101 조 �
 SIDE_GAP = 0.010           # 협동 파지: 툴 프레임-물체 측면 간격 [m]
 CONTACT_TOL = 0.008        # 그리퍼-물체 접점 판정 거리 [m]
 JAW_OPEN, JAW_CLOSED = 1.0, 0.1
-HOME = {"A": (-0.20, 0.0, 0.17), "B": (0.20, 0.0, 0.17)}
 PULSE_S = 0.1              # 동적 펄스 부하 시간
 # 종류별 (OCV[V], 펄스전류[A], 재사용 R_int 임계[Ω])
 CELL_PARAMS = {ItemType.BATTERY_18650: (3.9, 2.0, 0.08), ItemType.BATTERY_AA_AAA: (1.5, 0.5, 0.30)}
@@ -223,14 +222,14 @@ class SortingFSM:
         return State.RETURN_HOME
 
     def s_RETURN_HOME(self, ctx):
-        self.reach({a: HOME[a] for a in "AB"}, tol=0.02, max_steps=140)
+        self.rc.stow("AB", hold=self._hold)
         return State.DONE
 
     def s_FAULT(self, ctx):
         self._release_all()
         for a in "AB":
             self.jaw[a] = JAW_OPEN
-        self.reach({a: HOME[a] for a in "AB"}, tol=0.02, max_steps=140)
+        self.rc.stow("AB", hold=self._hold)
         mx, my = BINS["manual"]["center"]
         p.resetBasePositionAndOrientation(self.env.items[ctx["id"]]["uid"], [mx, my, 0.03], [0, 0, 0, 1])
         ctx["dest"] = "manual"
