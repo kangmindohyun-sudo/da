@@ -52,6 +52,28 @@ def main():
         keep = {f"ITEM_2026_{int(x):04d}" for x in a.only.split(",")}
         sc = [(j, r) for j, r in sc if j.item_id in keep]
     fsm = SortingFSM(env, rc, {j.item_id: r for j, r in sc if r is not None})
+    events = []
+    import numpy as np, pybullet as pb
+
+    def watch():
+        if env.tick_count % 12 == 0 and 'clr' not in seen:
+            c = env.arm_clearance()
+            if c < 0.0:
+                seen.add('clr')
+                events.append(dict(arm_collision=round(c * 1000, 1), tick=env.tick_count, tools={a: [round(float(x), 3) for x in env.tool_pos(a)] for a in 'AB'},
+                                   q={a: [round(float(x), 2) for x in env.robots[a].q()] for a in 'AB'}))
+        for iid, it in env.items.items():
+            if iid in seen:
+                continue
+            v = np.linalg.norm(pb.getBaseVelocity(it["uid"], physicsClientId=env.cid)[0])
+            if v > 3.0:
+                seen.add(iid)
+                cps = pb.getContactPoints(bodyA=it["uid"], physicsClientId=env.cid)
+                events.append(dict(item=iid, tick=env.tick_count, speed=round(float(v), 1), pos=[round(float(x), 3) for x in env.item_pos(iid)],
+                                   contacts=[(c[2], c[4], round(c[9], 1)) for c in cps][:5],
+                                   tools={a: [round(float(x), 3) for x in env.tool_pos(a)] for a in 'AB'}))
+    seen = set()
+    env.hooks.append(watch)
     t0 = time.time()
     for jev, _ in sc:
         r = fsm.process(jev)
@@ -60,6 +82,8 @@ def main():
     ok = sum(r["in_bin"] for r in fsm.log)
     print(f"\n{ok}/{len(fsm.log)} items verified inside destination bin | min arm clearance "
           f"{rc.min_clearance*100:.1f} cm | policy steps {rc.steps_used} | wall {time.time()-t0:.0f}s")
+    for ev in events:
+        print('BLOWUP', ev)
     json.dump(fsm.log, open(a.out.replace(".mp4", ".json"), "w"), indent=2, ensure_ascii=False)
     if env.frames:
         from PIL import Image

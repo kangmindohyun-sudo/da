@@ -35,6 +35,17 @@ class ReachEnv(gym.Env):
         import os
         gp = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'models', 'goals.npy')
         self.goals = np.load(gp) if (hold and os.path.exists(gp)) else None
+        self.key_idx = []
+        if self.goals is not None:
+            from .environment import ARM_BASES, BINS
+            pts = [(0.0, 0.0)] + [tuple(b['center']) for b in BINS.values()]
+            for xy, yaw in ARM_BASES.values():
+                for x, y in pts:
+                    dx, dy = x - xy[0], y - xy[1]
+                    k = np.array([dx, dy]) if yaw == 0 else np.array([-dx, -dy])
+                    idx = np.where(np.linalg.norm(self.goals[:, :2] - k, axis=1) < 0.03)[0]
+                    if len(idx) > 20:
+                        self.key_idx.append(idx)
         self.cid = p.connect(p.DIRECT)
         p.setGravity(0, 0, -9.81, physicsClientId=self.cid)
         p.setTimeStep(1 / 240, physicsClientId=self.cid)
@@ -58,7 +69,11 @@ class ReachEnv(gym.Env):
         r = self.robot
         # 목표를 먼저 샘플(관절을 임의 자세로 흔들므로), 이후 홈 근처 + 노이즈로 시작
         if self.goals is not None:
-            self.goal = self.goals[self.rng.integers(len(self.goals))].copy()
+            if self.key_idx and self.rng.random() < 0.6:   # 작업 목표(수거함/투입 위치) 집중 샘플링
+                idx = self.key_idx[self.rng.integers(len(self.key_idx))]
+                self.goal = self.goals[idx[self.rng.integers(len(idx))]].copy()
+            else:
+                self.goal = self.goals[self.rng.integers(len(self.goals))].copy()
         else:
             self.goal = sample_goal(r, self.rng, hi_z=0.09 if (self.hold and self.rng.random() < 0.6) else 0.28)
         start = r.home_q + self.rng.normal(0, 0.25, 5)

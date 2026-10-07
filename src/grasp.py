@@ -65,8 +65,9 @@ class MagnetTip:
             target = tip + np.array([0, 0, -(hz + 0.0005)])   # 고정 핑거 패드 하단면에 코인 윗면이 붙는 위치
             d = target - pos
             if np.linalg.norm(d) < 0.02:
-                f = 60.0 * d - 1.5 * vel
+                m = p.getDynamicsInfo(uid, -1, physicsClientId=self.env.cid)[0]
+                f = m * (3600.0 * d - 120.0 * vel) + m * 9.81 * np.array([0, 0, 1.0])   # 질량 정규화된 감쇠 스프링 + 중력 보상
                 n = np.linalg.norm(f)
-                if n > 1.2:
-                    f = f / n * 1.2
+                if n > 0.6:
+                    f = f / n * 0.6
                 p.applyExternalForce(uid, -1, f.tolist(), pos.tolist(), p.WORLD_FRAME, physicsClientId=self.env.cid)

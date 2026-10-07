@@ -26,13 +26,13 @@ ITEM_SPECS = {
 }
 
 BINS = {
-    "isolation": dict(center=(0.0, -0.26), half=0.075, color=(0.85, 0.15, 0.15, 1), label="FIRE ISOLATION"),
-    "manual": dict(center=(0.0, 0.26), half=0.085, color=(0.95, 0.8, 0.1, 1), label="MANUAL LINE"),
-    "reuse": dict(center=(-0.22, 0.15), half=0.045, color=(0.2, 0.7, 0.3, 1), label="REUSE"),
-    "recycle": dict(center=(-0.22, -0.15), half=0.045, color=(0.2, 0.45, 0.85, 1), label="RECYCLE"),
-    "coin_CR": dict(center=(-0.15, 0.24), half=0.032, color=(0.95, 0.5, 0.1, 1), label="CR Li"),
-    "coin_SR": dict(center=(-0.15, -0.24), half=0.032, color=(0.75, 0.75, 0.8, 1), label="SR Ag"),
-    "coin_LR": dict(center=(-0.27, 0.0), half=0.032, color=(0.6, 0.35, 0.8, 1), label="LR Alk"),
+    "isolation": dict(center=(0.0, -0.16), half=0.065, color=(0.85, 0.15, 0.15, 1), label="FIRE ISOLATION"),
+    "manual": dict(center=(0.0, 0.26), half=0.065, color=(0.95, 0.8, 0.1, 1), label="MANUAL LINE"),
+    "reuse": dict(center=(-0.095, 0.185), half=0.042, color=(0.2, 0.7, 0.3, 1), label="REUSE"),
+    "recycle": dict(center=(-0.095, -0.055), half=0.040, color=(0.2, 0.45, 0.85, 1), label="RECYCLE"),
+    "coin_CR": dict(center=(-0.095, 0.285), half=0.028, color=(0.95, 0.5, 0.1, 1), label="CR Li"),
+    "coin_SR": dict(center=(-0.095, 0.10), half=0.028, color=(0.75, 0.75, 0.8, 1), label="SR Ag"),
+    "coin_LR": dict(center=(-0.095, 0.035), half=0.028, color=(0.6, 0.35, 0.8, 1), label="LR Alk"),
 }
 BIN_WALL_H = 0.04
 
@@ -42,6 +42,8 @@ class Environment:
         self.cid = p.connect(p.GUI if gui else p.DIRECT)
         p.setGravity(0, 0, -9.81, physicsClientId=self.cid)
         p.setTimeStep(1 / 240, physicsClientId=self.cid)
+        p.setPhysicsEngineParameter(numSolverIterations=150, enableConeFriction=1, contactBreakingThreshold=0.001,
+                                    physicsClientId=self.cid)
         self.width, self.height, self.frame_every = width, height, frame_every
         self.frames, self.tick_count = [], 0
         self.status = {}
@@ -52,9 +54,10 @@ class Environment:
 
     def _build_scene(self):
         he = [0.9, 0.7, 0.01]
-        cs = p.createCollisionShape(p.GEOM_BOX, halfExtents=he)
+        cs = p.createCollisionShape(p.GEOM_BOX, halfExtents=[0.9, 0.7, 0.10])   # 두꺼운 바닥(고속 물체 터널링 방지)
         vs = p.createVisualShape(p.GEOM_BOX, halfExtents=he, rgbaColor=[0.86, 0.86, 0.84, 1])
-        p.createMultiBody(0, cs, vs, [0, 0, -0.01])
+        p.createMultiBody(0, cs, vs, [0, 0, -0.10])
+        p.createMultiBody(0, -1, vs, [0, 0, -0.01])
         pv = p.createVisualShape(p.GEOM_CYLINDER, radius=0.05, length=0.002, rgbaColor=[0.25, 0.25, 0.28, 1])
         p.createMultiBody(0, -1, pv, [*SPAWN_XY, 0.001])  # 진단 플레이트(투입 위치)
         fv = p.createVisualShape(p.GEOM_BOX, halfExtents=[0.40, 0.07, 0.008], rgbaColor=[0.35, 0.35, 0.4, 1])
@@ -88,7 +91,8 @@ class Environment:
             vs = p.createVisualShape(p.GEOM_BOX, halfExtents=dims, rgbaColor=color)
             half = dims
         uid = p.createMultiBody(mass, cs, vs, [xy[0], xy[1], half[2] + 0.001], p.getQuaternionFromEuler([0, 0, yaw]))
-        p.changeDynamics(uid, -1, lateralFriction=1.0, linearDamping=0.05, angularDamping=0.1)
+        p.changeDynamics(uid, -1, lateralFriction=1.0, linearDamping=0.05, angularDamping=0.1, restitution=0.0,
+                         ccdSweptSphereRadius=min(half) * 0.8, contactProcessingThreshold=0.0)
         self.items[item_id] = dict(uid=uid, half=half, type=item_type)
         self.tick(30)
         return uid
@@ -109,8 +113,8 @@ class Environment:
                 self.frames.append(self.render())
 
     def arm_clearance(self):
-        pts = p.getClosestPoints(self.robots["A"].id, self.robots["B"].id, 1.0, physicsClientId=self.cid)
-        return min((c[8] for c in pts), default=1.0)
+        pts = p.getClosestPoints(self.robots["A"].id, self.robots["B"].id, 0.12, physicsClientId=self.cid)
+        return min((c[8] for c in pts), default=0.12)
 
     def contact_distance(self, arm, item_id):
         """그리퍼(전 링크) - 물체 최근접 거리 [m]. 접점 검증용."""

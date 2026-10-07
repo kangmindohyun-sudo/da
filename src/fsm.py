@@ -21,6 +21,9 @@ LARGE_SPAN = 0.05          # 이 이상이면 양팔 협동 파지
 MIN_FORCE = 1.0            # 파지 판정: 패드(고정/이동) 각각 법선 접촉력 [N]
 PINCH_HEADING = np.pi / 2  # 핀치축(툴 x)을 월드 y축 방향으로
 PULSE_S = 0.1
+SQ_GAP = 0.012   # 압착 접근 시작 간격(측면에서 떨어진 거리)
+SQUEEZE_TARGET, SQUEEZE_MAX, SQUEEZE_MIN = 4.0, 25.0, 2.0   # 협동 압착 접촉력 목표/상한/합격 [N]
+PRESTOW = {"A": (-0.12, 0.08, 0.22), "B": (0.12, -0.08, 0.22)}   # 보관 전 자기 쪽 높은 경유점(상대 팔 보관 영역을 쓸지 않도록)
 CELL_PARAMS = {ItemType.BATTERY_18650: (3.9, 2.0, 0.08), ItemType.BATTERY_AA_AAA: (1.5, 0.5, 0.30)}
 
 
@@ -75,19 +78,34 @@ class SortingFSM:
             err = self.reach(wp, tol=tol if last else 0.02, max_steps=max_steps if last else 50)
         return err
 
+    def servo(self, goals, tol=0.004, iters=4, max_steps=100):
+        """정책 도달 후 남은 위치 오차를 측정해 목표를 보정하며 재도달(폐루프 미세 보정)."""
+        goals = {a: np.asarray(g, float) for a, g in goals.items()}
+        cmd = {a: g.copy() for a, g in goals.items()}
+        for _ in range(iters):
+            err = self.reach(cmd, tol=tol, max_steps=max_steps)
+            e = {a: goals[a] - self.env.tool_pos(a) for a in goals}
+            if all(np.linalg.norm(v[:2]) < tol and abs(v[2]) < 2 * tol for v in e.values()):
+                break
+            for a in goals:
+                cmd[a] = cmd[a] + e[a] * 0.8
+        return {a: float(np.linalg.norm(goals[a] - self.env.tool_pos(a))) for a in goals}
+
     def _tick(self, n):
         for _ in range(n):
             self._hold()
             self.env.tick()
 
-    def _align(self, arms, heading, tol=0.03, steps=80):
+    def _align(self, arms, headings, periods=None, tol=0.03, steps=100):
+        periods = periods or {}
         for _ in range(steps):
             worst = 0.0
             for a in arms:
                 r = self.env.robots[a]
                 _, Rm = tool_axes(r)
                 h = np.arctan2(Rm[1, 0], Rm[0, 0])
-                d = (heading - h + np.pi / 2) % np.pi - np.pi / 2
+                P = periods.get(a, np.pi)
+                d = (headings[a] - h + P / 2) % P - P / 2
                 worst = max(worst, abs(d))
                 r.command(r.q_target + np.array([0, 0, 0, 0, np.clip(d, -0.1, 0.1)]))
             self._hold()
@@ -129,11 +147,11 @@ class SortingFSM:
             ctx["arms"] = "B"
         else:
             ctx["arms"] = "A"
-        ctx["mode"] = "magnet" if ctx["route"] == "COIN_SORT" else ("coop-pinch" if large else "pinch")
+        ctx["mode"] = "magnet" if ctx["route"] == "COIN_SORT" else ("coop" if large else "pinch")
         return State.APPROACH
 
     def _plan(self, ctx):
-        """arm -> 파지 계획(핀치 위치, 개구, 툴 z). 파지 중심은 물체 중심 기준."""
+        """arm -> 파지 계획. pinch: A가 물체 중앙을 핀치. support: B가 +x쪽 측면에 닫힌 패드로 접촉(양팔 접점 검증/지지)."""
         item = self.env.items[ctx["id"]]
         c = self.env.item_pos(ctx["id"])
         hx, hy, hz = item["half"]
@@ -141,44 +159,70 @@ class SortingFSM:
         plan = {}
         for a in ctx["arms"]:
             if ctx["mode"] == "magnet":
-                plan[a] = dict(kind="magnet", xy=c[:2].copy(), z=2 * hz + 0.003 + MAGNET_OFFSET[1])
-                continue
-            dx = 0.0
-            if ctx["mode"] == "coop-pinch":
-                delta = {ItemType.AUX_PACK: 0.035, ItemType.CAN_ALUMINUM: 0.026, ItemType.CAN_FERROUS: 0.026}.get(ctx["jev"].item_type, 0.022)
-                dx = -delta if a == "A" else delta
-            if item["half"][0] == item["half"][1] and ctx["jev"].item_type in (ItemType.CAN_ALUMINUM, ItemType.CAN_FERROUS):
-                chord = 2 * np.sqrt(max(hx ** 2 - dx ** 2, 1e-6))
+                plan[a] = dict(kind="magnet", xy=c[:2].copy(), z=2 * hz + 0.008 + MAGNET_OFFSET[1], heading=PINCH_HEADING)
+            elif ctx["mode"] == "coop":
+                # 두 팔이 닫힌 패드로 양쪽에서 압착(헤딩 0: 툴 +x = 월드 +x).
+                # A: 고정 패드 바깥면(+0.017)이 물체 -x 측면에, B: 이동 조 패드 바깥면(-0.0225)이 +x 측면에 닿음
+                zt = min(max(0.5 * full_h, 0.012), 0.07) + 0.006
+                if a == "A":
+                    plan[a] = dict(kind="squeeze", xy=np.array([c[0] - hx - 0.017 - SQ_GAP, c[1]]), z=zt, heading=0.0, period=2 * np.pi, inward=1.0, push=0.0)
+                else:
+                    plan[a] = dict(kind="squeeze", xy=np.array([c[0] + hx + 0.0225 + SQ_GAP, c[1]]), z=zt, heading=0.0, period=2 * np.pi, inward=-1.0, push=0.0)
             else:
-                chord = 2 * hy       # 핀치축=월드 y -> y방향 폭
-            O = float(np.clip(chord + 0.030, 0.012, 0.079))
-            zb = 0.004 if full_h < 0.03 else 0.010   # 패드 하단 높이
-            plan[a] = dict(kind="pinch", xy=c[:2] + np.array([dx, 0.0]), O=O, qo=jaw_q_for_opening(O), z=zb + 0.006)
+                chord = 2 * hy if ctx["jev"].item_type not in (ItemType.CAN_ALUMINUM, ItemType.CAN_FERROUS) else 2 * hx
+                O = float(np.clip(chord + 0.050, 0.012, 0.079))
+                zb = 0.004 if full_h < 0.03 else 0.010
+                plan[a] = dict(kind="pinch", xy=c[:2].copy(), O=O, qo=jaw_q_for_opening(O), z=zb + 0.006, heading=PINCH_HEADING)
         return plan
 
     def _tool_goal(self, a, pl, z):
-        """정렬된 툴 자세에서 핀치(자석) 지점이 목표 xy가 되도록 툴 프레임 목표 계산."""
+        """정렬된 툴 자세에서 핀치(자석) 지점 또는 지지 접점이 목표 xy가 되도록 툴 프레임 목표 계산."""
+        if pl["kind"] == "squeeze":
+            return np.array([pl["xy"][0] + pl["inward"] * pl["push"], pl["xy"][1], z])
         _, Rm = tool_axes(self.env.robots[a])
         off = (MAGNET_OFFSET[0] if pl["kind"] == "magnet" else FIXED_FACE_X - pl["O"] / 2)
         xy = pl["xy"] - Rm[:2, 0] * off
         return np.array([xy[0], xy[1], z])
 
+    def _grasp_err(self, a, pl, z_target):
+        """(수평 오차 벡터, 방향 오차 [rad], 3D 보정용 오차 벡터)."""
+        pos, Rm = tool_axes(self.env.robots[a])
+        if pl["kind"] == "squeeze":
+            pt = pos[:2] - np.array([pl["inward"] * pl["push"], 0.0])
+        else:
+            off = (MAGNET_OFFSET[0] if pl["kind"] == "magnet" else FIXED_FACE_X - pl["O"] / 2)
+            pt = pos[:2] + Rm[:2, 0] * off
+        h = np.arctan2(Rm[1, 0], Rm[0, 0])
+        P = pl.get("period", np.pi)
+        dh = abs((pl["heading"] - h + P / 2) % P - P / 2)
+        e = np.array([pt[0] - pl["xy"][0], pt[1] - pl["xy"][1], pos[2] - z_target])
+        return e[:2], float(dh), e
+
     def s_APPROACH(self, ctx):
         plan = self._plan(ctx)
         ctx["plan"] = plan
         arms = ctx["arms"]
-        z_h = max(Z_COOP if len(arms) > 1 else Z_HOVER, 2 * ctx["half"][2] + 0.075)   # 물체 윗면보다 충분히 위
+        z_h = min(0.165, max(Z_COOP if len(arms) > 1 else Z_HOVER, 2 * ctx["half"][2] + 0.04))   # 정책 도달 범위(≈17cm) 내에서 물체 윗면 위
         ctx["z_h"] = z_h
         for a in arms:
             self.jaw_q[a] = JAW_CLOSE_Q   # 이동 중에는 조를 닫아 부피를 줄임
         self.move({a: [plan[a]["xy"][0], plan[a]["xy"][1], z_h] for a in arms}, tol=0.015)
         for a in arms:
-            self.jaw_q[a] = plan[a].get("qo", JAW_CLOSE_Q)
+            self.jaw_q[a] = plan[a].get("qo", JAW_CLOSE_Q)   # support/magnet: 닫힘 유지
         self._tick(70)
-        self._align(arms, PINCH_HEADING)
-        self.move({a: self._tool_goal(a, plan[a], z_h) for a in arms}, tol=0.008)
-        self.move({a: self._tool_goal(a, plan[a], 0.09) for a in arms}, tol=0.006, max_steps=120)
-        err = self.move({a: self._tool_goal(a, plan[a], plan[a]["z"]) for a in arms}, tol=0.005, max_steps=140)
+        corr = {a: np.zeros(3) for a in arms}      # 정책 편향 보정량(측정 오차를 누적해 목표에 더함)
+        errs = {}
+        for z in (z_h, 0.09, 0.05, None):          # 단계 하강: 매 단계 롤 재정렬 + 물체 기준 폐루프 보정
+            for it in range(6):
+                self._align(arms, {a: plan[a]["heading"] for a in arms}, {a: plan[a].get("period", np.pi) for a in arms})
+                zz = {a: (plan[a]["z"] if z is None else max(z, plan[a]["z"])) for a in arms}
+                self.reach({a: self._tool_goal(a, plan[a], zz[a]) + corr[a] for a in arms}, tol=0.003, max_steps=60)
+                errs = {a: self._grasp_err(a, plan[a], zz[a]) for a in arms}
+                if all(np.linalg.norm(e[0]) < 0.003 and abs(e[2][2]) < 0.004 and e[1] < 0.08 for e in errs.values()):
+                    break
+                for a in arms:
+                    corr[a] -= 0.8 * errs[a][2]
+        err = {a: float(np.linalg.norm(errs[a][2])) for a in arms}
         ctx["reach_err_mm"] = {a: round(v * 1000, 1) for a, v in err.items()}
         ctx["tool_xy_off"] = {a: self.env.tool_pos(a)[:2] - self.env.item_pos(ctx["id"])[:2] for a in arms}
         return State.GRASP_VERIFY
@@ -186,20 +230,50 @@ class SortingFSM:
     def s_GRASP_VERIFY(self, ctx):
         arms, plan = ctx["arms"], ctx["plan"]
         for a in arms:
-            if plan[a]["kind"] == "pinch":
-                self.jaw_q[a] = JAW_CLOSE_Q
-            else:
+            if plan[a]["kind"] == "magnet":
                 self.magnet.on(a, ctx["id"])
-        self._tick(150)
+        # 조를 천천히 닫으며 양 패드 접촉력이 충분해지면 멈춤 (급하게 닫으면 물체가 튕김)
+        for _ in range(80):
+            for a in arms:
+                if plan[a]["kind"] == "pinch":
+                    f_ = contact_forces(self.env, a, ctx["id"])
+                    if min(f_["fixed"], f_["jaw"]) < 3.0:
+                        self.jaw_q[a] = max(JAW_CLOSE_Q, self.jaw_q[a] - 0.02)
+            self._tick(5)
+        self._tick(40)
         forces = {}
+        if any(plan[a]["kind"] == "squeeze" for a in arms):
+            self._squeeze(ctx, plan, arms)
         for a in arms:
-            if plan[a]["kind"] == "pinch":
+            if plan[a]["kind"] in ("pinch", "squeeze"):
                 forces[a] = contact_forces(self.env, a, ctx["id"])
         ctx["forces"] = forces
-        bad = {a: f for a, f in forces.items() if min(f["fixed"], f["jaw"]) < MIN_FORCE}
+        bad = {}
+        for a, f_ in forces.items():
+            if plan[a]["kind"] == "pinch":
+                ok = min(f_["fixed"], f_["jaw"]) >= MIN_FORCE
+            else:
+                ok = f_["fixed" if a == "A" else "jaw"] >= SQUEEZE_MIN
+            if not ok:
+                bad[a] = f_
         if bad:
-            raise GraspFailure(f"contact force below {MIN_FORCE}N: { {a: {k: round(v, 2) for k, v in f.items()} for a, f in bad.items()} }")
+            raise GraspFailure(f"contact force check failed: { {a: {k: round(v, 2) for k, v in f_.items()} for a, f_ in bad.items()} }")
         return State.LIFT_TRANSPORT
+
+    def _squeeze(self, ctx, plan, arms):
+        """두 팔을 안쪽으로 조금씩 밀며 양쪽 패드 접촉력이 목표(SQUEEZE_TARGET N)가 될 때까지 압착 (힘 피드백)."""
+        key = {"A": "fixed", "B": "jaw"}
+        for _ in range(24):
+            fs = {a: contact_forces(self.env, a, ctx["id"])[key[a]] for a in arms}
+            if all(SQUEEZE_TARGET <= v <= SQUEEZE_MAX for v in fs.values()):
+                break
+            for a in arms:
+                if fs[a] < SQUEEZE_TARGET:
+                    plan[a]["push"] = min(plan[a]["push"] + 0.002, 0.034)
+                elif fs[a] > SQUEEZE_MAX:
+                    plan[a]["push"] = max(plan[a]["push"] - 0.001, 0.0)
+            self.reach({a: self._tool_goal(a, plan[a], plan[a]["z"]) for a in arms}, tol=0.0015, max_steps=40)
+            self._tick(30)
 
     def _lift(self, ctx):
         arms, plan = ctx["arms"], ctx["plan"]
@@ -219,7 +293,7 @@ class SortingFSM:
 
     def _carry_to(self, ctx, dest):
         arms = ctx["arms"]
-        z = ctx["z_h"]
+        z = BIN_WALL_H + 0.045 + ctx["bottom_off"]   # 수거함 벽 위 4.5cm에 물체 바닥 (작업영역 안쪽의 낮은 호버)
         cx, cy = self._bin_xy(dest)
         ctx["drop_xy"] = (cx, cy)
         goals = {a: np.array([cx + ctx["tool_xy_off"][a][0], cy + ctx["tool_xy_off"][a][1], z]) for a in arms}
@@ -283,8 +357,14 @@ class SortingFSM:
         self.counts[ctx["dest"]] += 1
         return State.RETURN_HOME
 
-    def s_RETURN_HOME(self, ctx):
+    def _go_stow(self, arms):
+        for a in arms:
+            self.jaw_q[a] = JAW_CLOSE_Q
+        self.move({a: PRESTOW[a] for a in arms}, tol=0.03, max_steps=80)
         self.rc.stow("AB", hold=self._hold)
+
+    def s_RETURN_HOME(self, ctx):
+        self._go_stow(ctx["arms"])
         return State.DONE
 
     def s_FAULT(self, ctx):
@@ -298,9 +378,7 @@ class SortingFSM:
             t = self.env.tool_pos(a)
             goals[a] = np.array([t[0], t[1], ctx.get("z_h", Z_COOP)])
         self.move(goals, tol=0.02, max_steps=80)
-        for a in 'AB':
-            self.jaw_q[a] = JAW_CLOSE_Q
-        self.rc.stow("AB", hold=self._hold)
+        self._go_stow(arms)
         # 작업자가 수거: 실패한 물체를 셀 밖으로 치움 (정상 분류로 집계하지 않음)
         p.resetBasePositionAndOrientation(self.env.items[ctx["id"]]["uid"], [0.8, 0.8, 0.05], [0, 0, 0, 1])
         ctx["dest"] = None

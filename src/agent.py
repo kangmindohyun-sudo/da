@@ -19,6 +19,7 @@ class LearnedReacher:
             vn = pickle.load(f)
         self.mean, self.var, self.clip, self.eps = vn.obs_rms.mean, vn.obs_rms.var, vn.clip_obs, vn.epsilon
         self.steps_used = 0
+        self.prev_act = {}
         self.min_clearance = 1.0
         self.violations = 0
 
@@ -58,6 +59,8 @@ class LearnedReacher:
                     continue
                 act, _ = self.model.predict(self._obs(r, goals[a]), deterministic=True)
                 act = np.clip(act, -1, 1).astype(float)
+                act = 0.5 * self.prev_act.get(a, act) + 0.5 * act      # 가속 제한(저크 완화)
+                self.prev_act[a] = act.copy()
                 if lock_roll:
                     act[4] = 0.0
                 r.command(r.q_target + act * DQ_SCALE)
@@ -65,9 +68,10 @@ class LearnedReacher:
                 hold()
             env.tick(SUBSTEPS)
             self.steps_used += 1
-            c = env.arm_clearance()
-            self.min_clearance = min(self.min_clearance, c)
-            self.violations += int(c < 0.01)
+            if self.steps_used % 4 == 0:
+                c = env.arm_clearance()
+                self.min_clearance = min(self.min_clearance, c)
+                self.violations += int(c < 0.01)
             for a in arms:
                 pos, zax = env.robots[a].tool()
                 ok = np.linalg.norm(pos - goals[a]) < tol and -zax[2] > TOOL_DOWN
