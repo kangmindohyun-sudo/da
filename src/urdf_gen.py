@@ -11,7 +11,7 @@ ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
 SRC = os.path.join(ROOT, "so101_new_calib.urdf")
 DST = os.path.join(ROOT, "so101_grip.urdf")
 
-PAD_W, PAD_T, PAD_Z0, PAD_Z1 = 0.016, 0.015, -0.040, 0.006   # 패드 폭(y), 두께(x), 툴 z 범위
+PAD_W, PAD_T, PAD_Z0, PAD_Z1 = 0.024, 0.015, -0.040, 0.006   # 패드 폭(y), 두께(x), 툴 z 범위
 FIXED_FACE_X = 0.002        # 고정 핑거 안쪽 면 (툴 프레임 x)
 JAW_FACE_X_CLOSED = -0.018  # 이동 조 안쪽 면 (q=0)
 

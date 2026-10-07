@@ -281,7 +281,7 @@
       </geometry>
       <material name="3d_printed"/>
     </visual>
-    <collision><origin xyz="-0.017400 -0.000218 -0.081127" rpy="3.141593 0.000003 3.141593"/><geometry><box size="0.01500 0.01600 0.04600"/></geometry></collision>
+    <collision><origin xyz="-0.017400 -0.000218 -0.081127" rpy="3.141593 0.000003 3.141593"/><geometry><box size="0.01500 0.02400 0.04600"/></geometry></collision>
   </link>
 
   <!-- Gripper frame (dummy link + fixed joint) -->
@@ -316,7 +316,7 @@
       </geometry>
       <material name="3d_printed"/>
     </visual>
-    <collision><origin xyz="-0.002600 -0.057727 0.019018" rpy="-1.570793 -0.000000 -3.141590"/><geometry><box size="0.01500 0.01600 0.04600"/></geometry></collision>
+    <collision><origin xyz="-0.002600 -0.057727 0.019018" rpy="-1.570793 -0.000000 -3.141590"/><geometry><box size="0.01500 0.02400 0.04600"/></geometry></collision>
   </link>
 
   <!-- Joint from gripper to moving_jaw_so101_v1 -->

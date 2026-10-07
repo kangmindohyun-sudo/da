@@ -10,7 +10,7 @@ from .jev_mock import ItemType
 from .robot import CEILING_Z, SO101, SUBSTEPS, TOOL_LINK
 
 SPAWN_XY = (0.0, 0.0)
-ARM_BASES = {"A": ((-0.14, 0.0), 0.0), "B": ((0.14, 0.0), math.pi)}  # A는 +x, B는 -x를 향함
+ARM_BASES = {"A": ((-0.22, 0.0), 0.0), "B": ((0.22, 0.0), math.pi)}  # A는 +x, B는 -x를 향함
 
 # (형상, 치수[반지름,높이]|[반치수], 색, 질량)  코인은 시각화를 위해 실물 대비 1.5배
 ITEM_SPECS = {
@@ -91,7 +91,7 @@ class Environment:
             vs = p.createVisualShape(p.GEOM_BOX, halfExtents=dims, rgbaColor=color)
             half = dims
         uid = p.createMultiBody(mass, cs, vs, [xy[0], xy[1], half[2] + 0.001], p.getQuaternionFromEuler([0, 0, yaw]))
-        p.changeDynamics(uid, -1, lateralFriction=1.0, linearDamping=0.05, angularDamping=0.1, restitution=0.0,
+        p.changeDynamics(uid, -1, lateralFriction=3.0, linearDamping=0.05, angularDamping=0.1, restitution=0.0,
                          ccdSweptSphereRadius=min(half) * 0.8, contactProcessingThreshold=0.0)
         self.items[item_id] = dict(uid=uid, half=half, type=item_type)
         self.tick(30)

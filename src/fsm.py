@@ -21,7 +21,7 @@ LARGE_SPAN = 0.05          # 이 이상이면 양팔 협동 파지
 MIN_FORCE = 1.0            # 파지 판정: 패드(고정/이동) 각각 법선 접촉력 [N]
 PINCH_HEADING = np.pi / 2  # 핀치축(툴 x)을 월드 y축 방향으로
 PULSE_S = 0.1
-SQ_GAP = 0.012   # 압착 접근 시작 간격(측면에서 떨어진 거리)
+SQ_GAP = 0.016   # 압착 접근 시작 간격(측면에서 떨어진 거리)
 SQUEEZE_TARGET, SQUEEZE_MAX, SQUEEZE_MIN = 4.0, 25.0, 2.0   # 협동 압착 접촉력 목표/상한/합격 [N]
 PRESTOW = {"A": (-0.12, 0.08, 0.22), "B": (0.12, -0.08, 0.22)}   # 보관 전 자기 쪽 높은 경유점(상대 팔 보관 영역을 쓸지 않도록)
 CELL_PARAMS = {ItemType.BATTERY_18650: (3.9, 2.0, 0.08), ItemType.BATTERY_AA_AAA: (1.5, 0.5, 0.30)}
@@ -159,21 +159,38 @@ class SortingFSM:
         plan = {}
         for a in ctx["arms"]:
             if ctx["mode"] == "magnet":
-                plan[a] = dict(kind="magnet", xy=c[:2].copy(), z=2 * hz + 0.008 + MAGNET_OFFSET[1], heading=PINCH_HEADING)
+                plan[a] = dict(kind="magnet", xy=c[:2].copy(), z=2 * hz + 0.008 + MAGNET_OFFSET[1], heading=self._pick_heading(a, PINCH_HEADING, (0.0, np.pi)))
             elif ctx["mode"] == "coop":
                 # 두 팔이 닫힌 패드로 양쪽에서 압착(헤딩 0: 툴 +x = 월드 +x).
                 # A: 고정 패드 바깥면(+0.017)이 물체 -x 측면에, B: 이동 조 패드 바깥면(-0.0225)이 +x 측면에 닿음
                 zt = min(max(0.5 * full_h, 0.012), 0.07) + 0.006
-                if a == "A":
-                    plan[a] = dict(kind="squeeze", xy=np.array([c[0] - hx - 0.017 - SQ_GAP, c[1]]), z=zt, heading=0.0, period=2 * np.pi, inward=1.0, push=0.0)
-                else:
-                    plan[a] = dict(kind="squeeze", xy=np.array([c[0] + hx + 0.0225 + SQ_GAP, c[1]]), z=zt, heading=0.0, period=2 * np.pi, inward=-1.0, push=0.0)
+                h = self._pick_heading(a, 0.0)                     # 롤 한계 여유 기준으로 헤딩 0 또는 π 선택
+                s = np.cos(h)
+                if a == "A":   # 월드 +x 방향으로 미는 면
+                    pad, off = ("fixed", 0.017) if s > 0 else ("jaw", 0.0225)
+                    plan[a] = dict(kind="squeeze", xy=np.array([c[0] - hx - off - SQ_GAP, c[1]]), z=zt, heading=h, period=2 * np.pi, inward=1.0, push=0.0, pad=pad)
+                else:          # B: 월드 -x 방향으로 미는 면
+                    pad, off = ("jaw", 0.0225) if s > 0 else ("fixed", 0.017)
+                    plan[a] = dict(kind="squeeze", xy=np.array([c[0] + hx + off + SQ_GAP, c[1]]), z=zt, heading=h, period=2 * np.pi, inward=-1.0, push=0.0, pad=pad)
             else:
                 chord = 2 * hy if ctx["jev"].item_type not in (ItemType.CAN_ALUMINUM, ItemType.CAN_FERROUS) else 2 * hx
                 O = float(np.clip(chord + 0.050, 0.012, 0.079))
                 zb = 0.004 if full_h < 0.03 else 0.010
-                plan[a] = dict(kind="pinch", xy=c[:2].copy(), O=O, qo=jaw_q_for_opening(O), z=zb + 0.006, heading=PINCH_HEADING)
+                plan[a] = dict(kind="pinch", xy=c[:2].copy(), O=O, qo=jaw_q_for_opening(O), z=zb + 0.006, heading=self._pick_heading(a, PINCH_HEADING, (0.0, np.pi)), period=2 * np.pi)
         return plan
+
+    def _pick_heading(self, a, base, offsets=(0.0, np.pi)):
+        """등가 헤딩 후보(base+offset) 중 롤 관절 한계 여유가 있고 회전량이 작은 쪽의 월드 헤딩."""
+        r = self.env.robots[a]
+        cur, q4 = r.heading() + r.yaw, r.q()[4]
+        best = None
+        for off in offsets:
+            dh = (base + off - cur + np.pi) % (2 * np.pi) - np.pi
+            ok = r.lo[4] + 0.25 < q4 + dh < r.hi[4] - 0.25
+            key = (0 if ok else 1, abs(dh))
+            if best is None or key < best[0]:
+                best = (key, cur + dh)
+        return best[1]
 
     def _target_heading(self, a, pl):
         """계획 헤딩(주기 P)과 등가인 각 중, 현재 헤딩에서 가장 가까운 월드 헤딩."""
@@ -213,7 +230,7 @@ class SortingFSM:
         plan = self._plan(ctx)
         ctx["plan"] = plan
         arms = ctx["arms"]
-        z_h = min(0.165, max(Z_COOP if len(arms) > 1 else Z_HOVER, 2 * ctx["half"][2] + 0.04))   # 정책 도달 범위(≈17cm) 내에서 물체 윗면 위
+        z_h = min(0.165, max(Z_HOVER, 2 * ctx["half"][2] + 0.04)) if len(arms) == 1 else Z_HOVER   # 정책 도달 범위(≈17cm) 내에서 물체 윗면 위
         ctx["z_h"] = z_h
         for a in arms:
             self.jaw_q[a] = JAW_CLOSE_Q   # 이동 중에는 조를 닫아 부피를 줄임
@@ -259,12 +276,17 @@ class SortingFSM:
             if plan[a]["kind"] in ("pinch", "squeeze"):
                 forces[a] = contact_forces(self.env, a, ctx["id"])
         ctx["forces"] = forces
+        item_xy = self.env.item_pos(ctx["id"])[:2]
+        for a in arms:   # 압착 오프셋(안쪽으로 미는 량)을 이후 리프트/이송 목표에 유지
+            if plan[a]["kind"] == "squeeze":
+                ctx["tool_xy_off"][a] = np.array([plan[a]["xy"][0] + plan[a]["inward"] * plan[a]["push"], plan[a]["xy"][1]]) - item_xy
+        ctx["tool_off3"] = {a: np.array([ctx["tool_xy_off"][a][0], ctx["tool_xy_off"][a][1], self.env.tool_pos(a)[2] - self.env.item_pos(ctx["id"])[2]]) for a in arms}
         bad = {}
         for a, f_ in forces.items():
             if plan[a]["kind"] == "pinch":
                 ok = min(f_["fixed"], f_["jaw"]) >= MIN_FORCE
             else:
-                ok = f_["fixed" if a == "A" else "jaw"] >= SQUEEZE_MIN
+                ok = f_[plan[a]["pad"]] >= SQUEEZE_MIN
             if not ok:
                 bad[a] = f_
         if bad:
@@ -273,9 +295,8 @@ class SortingFSM:
 
     def _squeeze(self, ctx, plan, arms):
         """두 팔을 안쪽으로 조금씩 밀며 양쪽 패드 접촉력이 목표(SQUEEZE_TARGET N)가 될 때까지 압착 (힘 피드백)."""
-        key = {"A": "fixed", "B": "jaw"}
         for _ in range(24):
-            fs = {a: contact_forces(self.env, a, ctx["id"])[key[a]] for a in arms}
+            fs = {a: contact_forces(self.env, a, ctx["id"])[plan[a]["pad"]] for a in arms}
             if all(SQUEEZE_TARGET <= v <= SQUEEZE_MAX for v in fs.values()):
                 break
             for a in arms:
@@ -286,15 +307,36 @@ class SortingFSM:
             self.reach({a: self._tool_goal(a, plan[a], plan[a]["z"]) for a in arms}, tol=0.0015, max_steps=40)
             self._tick(30)
 
+    def coop_move(self, ctx, target, step=0.004, tol=0.004):
+        """양팔 동기 이송: 물체 중심을 기준 좌표계로 두고 목표까지 step씩 전진, 각 팔 목표 = 물체 경로점 + 파지 오프셋."""
+        arms, iid = ctx["arms"], ctx["id"]
+        item0 = self.env.item_pos(iid)
+        target = np.asarray(target, float)
+        offs = ctx["tool_off3"]
+        n = max(1, int(np.ceil(np.linalg.norm(target - item0) / step)))
+        corr = {a: np.zeros(3) for a in arms}      # 각 팔의 추종 오차 적분 보상(두 팔 간 어긋남으로 인한 전단 제거)
+        for i in range(1, n + 1):
+            wp = item0 + (target - item0) * i / n
+            goals = {a: wp + offs[a] + corr[a] for a in arms}
+            self.reach(goals, tol=tol, max_steps=25)
+            for a in arms:
+                e = self.env.tool_pos(a) - (wp + offs[a])
+                corr[a] = np.clip(corr[a] - 0.5 * e, -0.008, 0.008)
+
     def _lift(self, ctx):
         arms, plan = ctx["arms"], ctx["plan"]
         z0 = self.env.item_pos(ctx["id"])[2]
         z_up = ctx["z_h"]
-        goals = {}
-        for a in arms:
-            t = self.env.tool_pos(a)
-            goals[a] = np.array([t[0], t[1], z_up])
-        self.move(goals, tol=0.010, max_steps=100)
+        if len(arms) > 1:
+            i0 = self.env.item_pos(ctx["id"])
+            self.coop_move(ctx, i0 + np.array([0, 0, z_up - self.env.tool_pos(arms[0])[2]]))
+        else:
+            goals = {}
+            ixy = self.env.item_pos(ctx["id"])[:2]
+            for a in arms:
+                xy = ixy + ctx["tool_xy_off"][a]
+                goals[a] = np.array([xy[0], xy[1], z_up])
+            self.move(goals, tol=0.010, step=0.02, max_steps=100)
         self._tick(40)
         z1 = self.env.item_pos(ctx["id"])[2]
         if z1 - z0 < 0.6 * (z_up - plan[arms[0]]["z"]):
@@ -309,7 +351,11 @@ class SortingFSM:
         ctx["drop_xy"] = (cx, cy)
         goals = {a: np.array([cx + ctx["tool_xy_off"][a][0], cy + ctx["tool_xy_off"][a][1], z]) for a in arms}
         ctx["hover"] = goals
-        self.move(goals, tol=0.012, max_steps=200)
+        if len(arms) > 1:
+            i0 = self.env.item_pos(ctx["id"])
+            self.coop_move(ctx, np.array([cx, cy, i0[2]]), step=0.005)
+        else:
+            self.move(goals, tol=0.012, max_steps=200)
 
     def _bin_xy(self, dest):
         cx, cy = BINS[dest]["center"]
@@ -355,13 +401,26 @@ class SortingFSM:
     def s_RELEASE(self, ctx):
         arms = ctx["arms"]
         z_drop = BIN_WALL_H + 0.02 + ctx["bottom_off"]
-        drop = {a: np.array([h[0], h[1], z_drop]) for a, h in ctx["hover"].items()}
-        self.move(drop, tol=0.010, max_steps=120)
-        for a in arms:
-            self.jaw_q[a] = JAW_WIDE_Q
-            self.magnet.off(a)
-        self._tick(90)
-        self.move({a: ctx["hover"][a] for a in arms}, tol=0.015, max_steps=80)
+        if len(arms) > 1:
+            hz = self.env.items[ctx["id"]]["half"][2]
+            cx, cy = ctx["drop_xy"]
+            self.coop_move(ctx, np.array([cx, cy, BIN_WALL_H + 0.02 + hz]), step=0.005)   # 양팔 동기 하강
+            for a in arms:
+                self.magnet.off(a)
+            plan = ctx["plan"]
+            out = {a: self.env.tool_pos(a) + np.array([-plan[a].get("inward", 0.0) * 0.035, 0.0, 0.0]) for a in arms}
+            self.reach(out, tol=0.01, max_steps=50)      # 압착 해제(바깥으로 이동)
+            self._tick(60)
+            up = {a: np.array([out[a][0], out[a][1], ctx["z_h"]]) for a in arms}
+            self.move(up, tol=0.02, max_steps=80)
+        else:
+            drop = {a: np.array([h[0], h[1], z_drop]) for a, h in ctx["hover"].items()}
+            self.move(drop, tol=0.010, max_steps=120)
+            for a in arms:
+                self.jaw_q[a] = JAW_WIDE_Q
+                self.magnet.off(a)
+            self._tick(90)
+            self.move({a: ctx["hover"][a] for a in arms}, tol=0.015, max_steps=80)
         for a in arms:
             self.jaw_q[a] = JAW_CLOSE_Q
         self._tick(40)

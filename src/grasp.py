@@ -10,7 +10,7 @@ _OPEN_TBL = np.array([(10.3, -0.17), (20.0, 0.0), (37.2, 0.3), (53.0, 0.6), (69.
 JAW_CLOSE_Q = -0.17
 JAW_FORCE = 3.0
 FIXED_FACE_X = 0.002     # 툴 프레임 x에서 고정 핑거 안쪽 면
-PAD_FRICTION = 2.0
+PAD_FRICTION = 5.0
 MAGNET_OFFSET = (0.0095, 0.006)   # 툴 프레임에서 자석면 위치 (x: 고정 패드 중심, z: 패드 하단)
 JAW_WIDE_Q = 1.4
 
