@@ -44,7 +44,7 @@ def main():
     a = ap.parse_args()
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
 
-    env = Environment(gui=a.gui, width=640, height=428, frame_every=0 if (a.gui or a.no_video) else 16)
+    env = Environment(gui=a.gui, width=480, height=320, frame_every=0 if (a.gui or a.no_video) else 36)
     rc = LearnedReacher(env, a.model, a.vecnorm)
     sc = scenario()
     fsm = SortingFSM(env, rc, {j.item_id: r for j, r in sc if r is not None})
