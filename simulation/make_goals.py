@@ -14,11 +14,12 @@ if __name__ == "__main__":
         q = rng.uniform(r.lo, r.hi)
         for j, v in zip(ARM_JOINTS, q): p.resetJointState(r.id, j, v, 0.0, physicsClientId=cid)
         pos, zax = r.tool()
+        hd = r.heading()
         if zax[2] > -0.9 or not (-0.2 <= pos[0] <= 0.36 and -0.32 <= pos[1] <= 0.32 and 0.005 <= pos[2] <= 0.2):
             continue
         k = tuple((pos // 0.015).astype(int))
-        if vox.get(k, 0) < 6:
-            vox[k] = vox.get(k, 0) + 1; keep.append(pos.copy())
+        if vox.get(k, 0) < 8:
+            vox[k] = vox.get(k, 0) + 1; keep.append(np.array([pos[0], pos[1], pos[2], hd]))
         if i % 300000 == 0: print(i, len(keep), flush=True)
-    np.save("models/goals.npy", np.array(keep))
+    np.save("models/goals_head.npy", np.array(keep))
     print("saved", len(keep), "goals; voxels", len(vox))

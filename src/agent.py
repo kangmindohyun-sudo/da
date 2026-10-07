@@ -18,15 +18,21 @@ class LearnedReacher:
         with open(vecnorm_path, "rb") as f:
             vn = pickle.load(f)
         self.mean, self.var, self.clip, self.eps = vn.obs_rms.mean, vn.obs_rms.var, vn.clip_obs, vn.epsilon
+        self.use_head = len(self.mean) > 20
         self.steps_used = 0
         self.prev_act = {}
         self.min_clearance = 1.0
         self.violations = 0
 
-    def _obs(self, robot, goal):
+    def _obs(self, robot, goal, heading=None):
         pos, zax = robot.tool()
         gb, pb = robot.to_base(goal), robot.to_base(pos)
-        o = np.concatenate([robot.q(), robot.dq() * 0.1, pb, gb, gb - pb, [zax[2]]]).astype(np.float32)
+        parts = [robot.q(), robot.dq() * 0.1, pb, gb, gb - pb, [zax[2]]]
+        if self.use_head:
+            tgt = robot.heading() if heading is None else (heading - robot.yaw)
+            dh = (tgt - robot.heading() + np.pi) % (2 * np.pi) - np.pi
+            parts.append([np.cos(dh), np.sin(dh)])
+        o = np.concatenate(parts).astype(np.float32)
         return np.clip((o - self.mean) / np.sqrt(self.var + self.eps), -self.clip, self.clip)
 
     def stow(self, arms, max_steps=80, hold=None):
@@ -46,23 +52,28 @@ class LearnedReacher:
             if err < 0.02:
                 break
 
-    def reach(self, goals, tol=0.012, max_steps=140, settle=True, hold=None, lock_roll=False):
+    def reach(self, goals, tol=0.012, max_steps=140, settle=True, hold=None, lock_roll=False, headings=None):
         """goals: {arm: xyz(world)}. 모든 팔을 동시에 구동. 반환: {arm: 최종 오차[m]}."""
         env = self.env
         arms = list(goals)
         done = {a: 0 for a in arms}
+        if headings is None:   # 헤딩 미지정: 현재 방향 유지
+            headings = {a: env.robots[a].heading() + env.robots[a].yaw for a in arms}
         for t in range(max_steps):
             for a in arms:
                 r = env.robots[a]
                 if done[a] >= 3 and settle:
                     r.command(r.q_target)
                     continue
-                act, _ = self.model.predict(self._obs(r, goals[a]), deterministic=True)
+                act, _ = self.model.predict(self._obs(r, goals[a], headings[a]), deterministic=True)
                 act = np.clip(act, -1, 1).astype(float)
                 act = 0.5 * self.prev_act.get(a, act) + 0.5 * act      # 가속 제한(저크 완화)
                 self.prev_act[a] = act.copy()
                 if lock_roll:
                     act[4] = 0.0
+                elif self.use_head:
+                    dh = (headings[a] - r.yaw - r.heading() + np.pi) % (2 * np.pi) - np.pi
+                    act[4] = float(np.clip(0.9 * dh / DQ_SCALE, -1, 1))   # 롤: 헤딩 비례 서보
                 r.command(r.q_target + act * DQ_SCALE)
             if hold:
                 hold()
@@ -75,6 +86,9 @@ class LearnedReacher:
             for a in arms:
                 pos, zax = env.robots[a].tool()
                 ok = np.linalg.norm(pos - goals[a]) < tol and -zax[2] > TOOL_DOWN
+                if self.use_head and headings is not None:
+                    dh = (headings[a] - env.robots[a].yaw - env.robots[a].heading() + np.pi) % (2 * np.pi) - np.pi
+                    ok = ok and abs(dh) < 0.15
                 done[a] = done[a] + 1 if ok else 0
             if all(done[a] >= 3 for a in arms):
                 break

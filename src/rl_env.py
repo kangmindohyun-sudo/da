@@ -29,12 +29,16 @@ def sample_goal(robot, rng, lo_z=0.015, hi_z=0.28):
 
 
 class ReachEnv(gym.Env):
-    def __init__(self, seed=0, hold=False):
+    def __init__(self, seed=0, hold=False, lock_roll=False, head=False):
         super().__init__()
         self.hold = hold
+        self.head = head
+        self.gh = 0.0
+        self.head_free = False
         import os
-        gp = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'models', 'goals.npy')
+        gp = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'models', 'goals_head.npy' if head else ('goals_roll.npy' if lock_roll else 'goals.npy'))
         self.goals = np.load(gp) if (hold and os.path.exists(gp)) else None
+        self.roll = None
         self.key_idx = []
         if self.goals is not None:
             from .environment import ARM_BASES, BINS
@@ -54,14 +58,21 @@ class ReachEnv(gym.Env):
         self.robot = SO101(client=self.cid)
         self.rng = np.random.default_rng(seed)
         self.action_space = spaces.Box(-1, 1, (5,), np.float32)
-        self.observation_space = spaces.Box(-np.inf, np.inf, (5 + 5 + 3 + 3 + 3 + 1,), np.float32)
+        self.observation_space = spaces.Box(-np.inf, np.inf, (5 + 5 + 3 + 3 + 3 + 1 + (2 if head else 0),), np.float32)
         self.goal = np.zeros(3)
 
     def _obs(self):
         r = self.robot
         pos, zax = r.tool()
         gb, pb = r.to_base(self.goal), r.to_base(pos)
-        return np.concatenate([r.q(), r.dq() * 0.1, pb, gb, gb - pb, [zax[2]]]).astype(np.float32)
+        o = [r.q(), r.dq() * 0.1, pb, gb, gb - pb, [zax[2]]]
+        if self.head:
+            dh = self._dh()
+            o.append([np.cos(dh), np.sin(dh)])
+        return np.concatenate(o).astype(np.float32)
+
+    def _dh(self):
+        return (self.gh - self.robot.heading() + np.pi) % (2 * np.pi) - np.pi
 
     def reset(self, seed=None, options=None):
         if seed is not None:
@@ -71,27 +82,42 @@ class ReachEnv(gym.Env):
         if self.goals is not None:
             if self.key_idx and self.rng.random() < 0.6:   # 작업 목표(수거함/투입 위치) 집중 샘플링
                 idx = self.key_idx[self.rng.integers(len(self.key_idx))]
-                self.goal = self.goals[idx[self.rng.integers(len(idx))]].copy()
+                row = self.goals[idx[self.rng.integers(len(idx))]].copy()
             else:
-                self.goal = self.goals[self.rng.integers(len(self.goals))].copy()
+                row = self.goals[self.rng.integers(len(self.goals))].copy()
+            self.goal = row[:3]
+            if self.head:
+                self.gh = float(row[3]) + (np.pi if self.rng.random() < 0.5 else 0.0)
+            else:
+                self.roll = float(row[3])
         else:
             self.goal = sample_goal(r, self.rng, hi_z=0.09 if (self.hold and self.rng.random() < 0.6) else 0.28)
         start = r.home_q + self.rng.normal(0, 0.25, 5)
         if self.rng.random() < 0.5:  # 절반은 임의 자세에서 시작 (연속 동작 중 재목표 상황 대응)
             start = np.clip(self.rng.uniform(r.lo, r.hi) * 0.6 + r.home_q * 0.4, r.lo, r.hi)
+        if self.head:
+            self.head_free = self.rng.random() < 0.25   # 일부 에피소드는 '시작 헤딩 유지' 목표(이송 중 방향 유지)
+        if self.roll is not None:   # 손목 롤은 에피소드 동안 고정(FSM 사용 조건과 동일): 목표와 쌍으로 샘플된 롤
+            start[4] = self.roll
         r.reset(np.clip(start, r.lo, r.hi))
         r.command(r.q_target)
         for _ in range(12):
             p.stepSimulation(physicsClientId=self.cid)
         self.t = 0
         self.ok_hist = []
+        if self.head and self.head_free:
+            self.gh = r.heading()
         pos, _ = r.tool()
         self.prev_d = np.linalg.norm(pos - self.goal)
         return self._obs(), {}
 
     def step(self, action):
         r = self.robot
-        a = np.clip(action, -1, 1)
+        a = np.clip(action, -1, 1).astype(float)
+        if self.roll is not None:
+            a[4] = 0.0
+        if self.head:   # 롤은 목표 헤딩 오차에 대한 비례 서보로 구동(정책은 위치 관절을 학습)
+            a[4] = float(np.clip(0.9 * self._dh() / DQ_SCALE, -1, 1))
         r.command(r.q_target + a * DQ_SCALE)
         for _ in range(SUBSTEPS):
             p.stepSimulation(physicsClientId=self.cid)
@@ -111,6 +137,12 @@ class ReachEnv(gym.Env):
             if pos[2] < 0.003:
                 rew -= 0.5
             ok = d < FINE_DIST and down > TOOL_DOWN
+            if self.head:
+                adh = abs(self._dh())
+                rew -= 0.3 * adh / np.pi
+                if adh < 0.15 and d < 0.02:
+                    rew += 0.3
+                ok = ok and adh < 0.15
             self.ok_hist = (self.ok_hist + [ok])[-10:]
             final = self.t >= MAX_STEPS
             info = {"d": d, "down": down, "success": bool(final and np.mean(self.ok_hist) >= 0.8)}

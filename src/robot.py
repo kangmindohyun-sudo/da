@@ -18,6 +18,7 @@ SUBSTEPS = 12             # 240Hz / 20Hz
 class SO101:
     def __init__(self, base_xy=(0.0, 0.0), yaw=0.0, client=0):
         self.cid = client
+        self.yaw = yaw
         self.base_pos = np.array([base_xy[0], base_xy[1], CEILING_Z])
         self.base_orn = p.getQuaternionFromEuler([math.pi, 0, yaw])  # roll=pi: 거꾸로 매달림
         self.id = p.loadURDF(URDF, self.base_pos.tolist(), self.base_orn, useFixedBase=True, physicsClientId=client)
@@ -40,6 +41,13 @@ class SO101:
         ls = p.getLinkState(self.id, TOOL_LINK, computeForwardKinematics=True, physicsClientId=self.cid)
         z_axis = np.array(p.getMatrixFromQuaternion(ls[5])).reshape(3, 3)[:, 2]
         return np.array(ls[4]), z_axis
+
+    def heading(self):
+        """툴 x축(핀치축)의 수평 방향각 [rad], 베이스 yaw를 뺀 값(두 팔이 같은 좌표계로 학습되도록)."""
+        ls = p.getLinkState(self.id, TOOL_LINK, computeForwardKinematics=True, physicsClientId=self.cid)
+        Rm = np.array(p.getMatrixFromQuaternion(ls[5])).reshape(3, 3)
+        h = math.atan2(Rm[1, 0], Rm[0, 0]) - self.yaw
+        return (h + math.pi) % (2 * math.pi) - math.pi
 
     def to_base(self, world_xyz):
         inv_p, inv_o = p.invertTransform(self.base_pos.tolist(), self.base_orn)

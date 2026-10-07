@@ -37,18 +37,38 @@ if __name__ == "__main__":
     ap.add_argument("--envs", type=int, default=4)
     ap.add_argument("--resume", default="")
     ap.add_argument("--hold", action="store_true")
+    ap.add_argument("--lock-roll", action="store_true")
+    ap.add_argument("--head", action="store_true", help="목표 헤딩(핀치축 방향) 조건부 정책")
     ap.add_argument("--tag", default="reach")
     a = ap.parse_args()
     TAG = a.tag
     torch.set_num_threads(1)
-    env = make_vec_env(lambda: ReachEnv(hold=a.hold), n_envs=a.envs, vec_env_cls=SubprocVecEnv, seed=0)
+    env = make_vec_env(lambda: ReachEnv(hold=a.hold, lock_roll=a.lock_roll, head=a.head), n_envs=a.envs, vec_env_cls=SubprocVecEnv, seed=0)
+    model = None
     if a.resume:
-        env = VecNormalize.load(a.resume + "_vecnorm.pkl", env)
-        env.training, env.norm_reward = True, True
-        model = PPO.load(a.resume + "_ppo", env=env, device="cpu", learning_rate=1.5e-4)
+        import pickle
+        old_vn = pickle.load(open(a.resume + "_vecnorm.pkl", "rb"))
+        n_old = len(old_vn.obs_rms.mean)
+        env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.0)
+        n_new = env.observation_space.shape[0]
+        env.obs_rms.mean[:n_old] = old_vn.obs_rms.mean
+        env.obs_rms.var[:n_old] = old_vn.obs_rms.var
+        env.obs_rms.count = old_vn.obs_rms.count
+        old = PPO.load(a.resume + "_ppo", device="cpu")
+        model = PPO("MlpPolicy", env, n_steps=512, batch_size=512, n_epochs=8, gamma=0.98, gae_lambda=0.95,
+                    learning_rate=1.5e-4, ent_coef=0.0, clip_range=0.2, policy_kwargs=dict(net_arch=[256, 256]),
+                    device="cpu", seed=0, verbose=0)
+        sd_old, sd_new = old.policy.state_dict(), model.policy.state_dict()
+        for k, v in sd_new.items():
+            if k in sd_old and sd_old[k].shape == v.shape:
+                sd_new[k] = sd_old[k].clone()
+            elif k in sd_old and v.dim() == 2 and v.shape[1] == n_new and sd_old[k].shape[1] == n_old:
+                z = v.clone() * 0.0   # 새 입력(헤딩) 가중치는 0에서 시작
+                z[:, :n_old] = sd_old[k]
+                sd_new[k] = z
+        model.policy.load_state_dict(sd_new)
     else:
         env = VecNormalize(env, norm_obs=True, norm_reward=True, clip_obs=10.0)
-        model = None
     model = model or PPO("MlpPolicy", env, n_steps=512, batch_size=512, n_epochs=8, gamma=0.98, gae_lambda=0.95,
                 learning_rate=3e-4, ent_coef=0.0, clip_range=0.2, policy_kwargs=dict(net_arch=[256, 256]),
                 device="cpu", seed=0, verbose=0)

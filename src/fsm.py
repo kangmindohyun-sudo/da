@@ -62,11 +62,11 @@ class SortingFSM:
             p.setJointMotorControl2(r.id, JAW_JOINT, p.POSITION_CONTROL, targetPosition=self.jaw_q[a],
                                     force=JAW_FORCE, physicsClientId=self.env.cid)
 
-    def reach(self, goals, tol=0.012, max_steps=140):
+    def reach(self, goals, tol=0.012, max_steps=140, headings=None):
         self._hold()
-        return self.rc.reach(goals, tol=tol, max_steps=max_steps, hold=self._hold, lock_roll=True)
+        return self.rc.reach(goals, tol=tol, max_steps=max_steps, hold=self._hold, lock_roll=False, headings=headings)
 
-    def move(self, goals, tol=0.012, step=0.05, max_steps=140):
+    def move(self, goals, tol=0.012, step=0.05, max_steps=140, headings=None):
         """현재 툴 위치에서 목표까지 직선 웨이포인트(간격 step)를 만들고 각 점을 학습 정책이 추종."""
         goals = {a: np.asarray(g, float) for a, g in goals.items()}
         cur = {a: self.env.tool_pos(a) for a in goals}
@@ -75,7 +75,7 @@ class SortingFSM:
         for i in range(1, n + 1):
             wp = {a: cur[a] + (goals[a] - cur[a]) * i / n for a in goals}
             last = i == n
-            err = self.reach(wp, tol=tol if last else 0.02, max_steps=max_steps if last else 50)
+            err = self.reach(wp, tol=tol if last else 0.02, max_steps=max_steps if last else 50, headings=headings)
         return err
 
     def servo(self, goals, tol=0.004, iters=4, max_steps=100):
@@ -175,13 +175,24 @@ class SortingFSM:
                 plan[a] = dict(kind="pinch", xy=c[:2].copy(), O=O, qo=jaw_q_for_opening(O), z=zb + 0.006, heading=PINCH_HEADING)
         return plan
 
-    def _tool_goal(self, a, pl, z):
+    def _target_heading(self, a, pl):
+        """계획 헤딩(주기 P)과 등가인 각 중, 현재 헤딩에서 가장 가까운 월드 헤딩."""
+        r = self.env.robots[a]
+        cur = r.heading() + r.yaw
+        P = pl.get("period", np.pi)
+        return cur + ((pl["heading"] - cur + P / 2) % P - P / 2)
+
+    def _tool_goal(self, a, pl, z, h=None):
         """정렬된 툴 자세에서 핀치(자석) 지점 또는 지지 접점이 목표 xy가 되도록 툴 프레임 목표 계산."""
         if pl["kind"] == "squeeze":
             return np.array([pl["xy"][0] + pl["inward"] * pl["push"], pl["xy"][1], z])
-        _, Rm = tool_axes(self.env.robots[a])
         off = (MAGNET_OFFSET[0] if pl["kind"] == "magnet" else FIXED_FACE_X - pl["O"] / 2)
-        xy = pl["xy"] - Rm[:2, 0] * off
+        if h is None:
+            _, Rm = tool_axes(self.env.robots[a])
+            ax = Rm[:2, 0]
+        else:
+            ax = np.array([np.cos(h), np.sin(h)])
+        xy = pl["xy"] - ax * off
         return np.array([xy[0], xy[1], z])
 
     def _grasp_err(self, a, pl, z_target):
@@ -214,9 +225,9 @@ class SortingFSM:
         errs = {}
         for z in (z_h, 0.09, 0.05, None):          # 단계 하강: 매 단계 롤 재정렬 + 물체 기준 폐루프 보정
             for it in range(6):
-                self._align(arms, {a: plan[a]["heading"] for a in arms}, {a: plan[a].get("period", np.pi) for a in arms})
+                hd = {a: self._target_heading(a, plan[a]) for a in arms}   # 헤딩 목표를 정책에 직접 전달(스크립트 롤 정렬 없음)
                 zz = {a: (plan[a]["z"] if z is None else max(z, plan[a]["z"])) for a in arms}
-                self.reach({a: self._tool_goal(a, plan[a], zz[a]) + corr[a] for a in arms}, tol=0.003, max_steps=60)
+                self.reach({a: self._tool_goal(a, plan[a], zz[a], hd[a]) + corr[a] for a in arms}, tol=0.003, max_steps=60, headings=hd)
                 errs = {a: self._grasp_err(a, plan[a], zz[a]) for a in arms}
                 if all(np.linalg.norm(e[0]) < 0.003 and abs(e[2][2]) < 0.004 and e[1] < 0.08 for e in errs.values()):
                     break
