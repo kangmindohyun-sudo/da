@@ -45,7 +45,7 @@ class LearnedReacher:
             if err < 0.02:
                 break
 
-    def reach(self, goals, tol=0.012, max_steps=140, settle=True, hold=None):
+    def reach(self, goals, tol=0.012, max_steps=140, settle=True, hold=None, lock_roll=False):
         """goals: {arm: xyz(world)}. 모든 팔을 동시에 구동. 반환: {arm: 최종 오차[m]}."""
         env = self.env
         arms = list(goals)
@@ -57,7 +57,10 @@ class LearnedReacher:
                     r.command(r.q_target)
                     continue
                 act, _ = self.model.predict(self._obs(r, goals[a]), deterministic=True)
-                r.command(r.q_target + np.clip(act, -1, 1) * DQ_SCALE)
+                act = np.clip(act, -1, 1).astype(float)
+                if lock_roll:
+                    act[4] = 0.0
+                r.command(r.q_target + act * DQ_SCALE)
             if hold:
                 hold()
             env.tick(SUBSTEPS)

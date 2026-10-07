@@ -39,6 +39,7 @@ def main():
     ap.add_argument("--gui", action="store_true")
     ap.add_argument("--out", default="out/sim.mp4")
     ap.add_argument("--no-video", action="store_true")
+    ap.add_argument("--only", default="", help="comma-separated item numbers, e.g. 101,106,109")
     ap.add_argument("--model", default="models/reach_ppo")
     ap.add_argument("--vecnorm", default="models/reach_vecnorm.pkl")
     a = ap.parse_args()
@@ -47,12 +48,15 @@ def main():
     env = Environment(gui=a.gui, width=480, height=320, frame_every=0 if (a.gui or a.no_video) else 36)
     rc = LearnedReacher(env, a.model, a.vecnorm)
     sc = scenario()
+    if a.only:
+        keep = {f"ITEM_2026_{int(x):04d}" for x in a.only.split(",")}
+        sc = [(j, r) for j, r in sc if j.item_id in keep]
     fsm = SortingFSM(env, rc, {j.item_id: r for j, r in sc if r is not None})
     t0 = time.time()
     for jev, _ in sc:
         r = fsm.process(jev)
-        print(f"{r['item_id']} {r['type']:10s} {r['route']:22s} arms={r['arms']:2s} -> {r['dest']:10s} "
-              f"in_bin={r['in_bin']} R={r['r_int_mohm']} contacts={r['contacts']} err={r['reach_err_mm']} {r['fault'] or ''}")
+        print(f"{r['item_id']} {r['type']:12s} {r['route']:22s} arms={r['arms']:2s} {r['grasp']:10s} -> {str(r['dest']):10s} "
+              f"in_bin={r['in_bin']} R={r['r_int_mohm']} forces={r['forces']} err={r['reach_err_mm']} final={r['final_xyz']} drop={r['drop_xy']} try={r['attempts']} {r['fault'] or ''}", flush=True)
     ok = sum(r["in_bin"] for r in fsm.log)
     print(f"\n{ok}/{len(fsm.log)} items verified inside destination bin | min arm clearance "
           f"{rc.min_clearance*100:.1f} cm | policy steps {rc.steps_used} | wall {time.time()-t0:.0f}s")

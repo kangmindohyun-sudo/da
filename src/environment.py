@@ -47,6 +47,7 @@ class Environment:
         self.status = {}
         self.items = {}
         self.robots = {}
+        self.hooks = []
         self._build_scene()
 
     def _build_scene(self):
@@ -62,6 +63,8 @@ class Environment:
             self.robots[n] = SO101(xy, yaw, self.cid)
         for name, b in BINS.items():
             self._make_bin(b["center"], b["half"], b["color"])
+        from .grasp import setup_friction
+        setup_friction(self)
 
     def _make_bin(self, center, half, color):
         t = 0.004
@@ -85,7 +88,7 @@ class Environment:
             vs = p.createVisualShape(p.GEOM_BOX, halfExtents=dims, rgbaColor=color)
             half = dims
         uid = p.createMultiBody(mass, cs, vs, [xy[0], xy[1], half[2] + 0.001], p.getQuaternionFromEuler([0, 0, yaw]))
-        p.changeDynamics(uid, -1, lateralFriction=0.9, linearDamping=0.8, angularDamping=0.8)
+        p.changeDynamics(uid, -1, lateralFriction=1.0, linearDamping=0.05, angularDamping=0.1)
         self.items[item_id] = dict(uid=uid, half=half, type=item_type)
         self.tick(30)
         return uid
@@ -98,6 +101,8 @@ class Environment:
 
     def tick(self, n=1):
         for _ in range(n):
+            for h in self.hooks:
+                h()
             p.stepSimulation(physicsClientId=self.cid)
             self.tick_count += 1
             if self.frame_every and self.tick_count % self.frame_every == 0:

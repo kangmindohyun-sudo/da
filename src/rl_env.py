@@ -32,6 +32,9 @@ class ReachEnv(gym.Env):
     def __init__(self, seed=0, hold=False):
         super().__init__()
         self.hold = hold
+        import os
+        gp = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'models', 'goals.npy')
+        self.goals = np.load(gp) if (hold and os.path.exists(gp)) else None
         self.cid = p.connect(p.DIRECT)
         p.setGravity(0, 0, -9.81, physicsClientId=self.cid)
         p.setTimeStep(1 / 240, physicsClientId=self.cid)
@@ -54,7 +57,10 @@ class ReachEnv(gym.Env):
             self.rng = np.random.default_rng(seed)
         r = self.robot
         # 목표를 먼저 샘플(관절을 임의 자세로 흔들므로), 이후 홈 근처 + 노이즈로 시작
-        self.goal = sample_goal(r, self.rng, hi_z=0.09 if (self.hold and self.rng.random() < 0.6) else 0.28)
+        if self.goals is not None:
+            self.goal = self.goals[self.rng.integers(len(self.goals))].copy()
+        else:
+            self.goal = sample_goal(r, self.rng, hi_z=0.09 if (self.hold and self.rng.random() < 0.6) else 0.28)
         start = r.home_q + self.rng.normal(0, 0.25, 5)
         if self.rng.random() < 0.5:  # 절반은 임의 자세에서 시작 (연속 동작 중 재목표 상황 대응)
             start = np.clip(self.rng.uniform(r.lo, r.hi) * 0.6 + r.home_q * 0.4, r.lo, r.hi)

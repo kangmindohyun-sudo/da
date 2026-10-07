@@ -6,7 +6,7 @@ import os
 import numpy as np
 import pybullet as p
 
-URDF = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "so101", "so101_new_calib.urdf")
+URDF = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "so101", "so101_grip.urdf")
 CEILING_Z = 0.42          # 베이스(천장) 높이 [m]
 ARM_JOINTS = [0, 1, 2, 3, 4]   # pan, lift, elbow, wrist_flex, wrist_roll
 JAW_JOINT = 6
